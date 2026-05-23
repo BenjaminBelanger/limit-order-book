@@ -1,0 +1,30 @@
+# Build directories
+build/
+out/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake.stamp
+
+# Compiled objects / binaries
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.lib
+*.pdb
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Benchmark / data artifacts
+bench/results/*.csv
+data/*.itch
+data/*.bin
+*.gz

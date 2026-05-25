@@ -17,3 +17,4 @@ function(lob_add_test name)
 endfunction()
 
 lob_add_test(smoke_test smoke_test.cpp)
+lob_add_test(matching_test matching_test.cpp)

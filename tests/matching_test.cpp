@@ -2,6 +2,7 @@
 
 #include "lob/matching_engine.hpp"
 #include "lob/naive_book.hpp"
+#include "lob/order_book.hpp"
 #include "test_support.hpp"
 
 using namespace lob;
@@ -17,7 +18,7 @@ protected:
   MatchingEngine<Book, CollectingSink> engine_{book_, sink_};
 };
 
-using BookTypes = ::testing::Types<NaiveBook>;
+using BookTypes = ::testing::Types<NaiveBook, FlatBook>;
 TYPED_TEST_SUITE(MatchingTest, BookTypes);
 
 // ---- Resting / BBO -----------------------------------------------------------

@@ -49,6 +49,10 @@ public:
       reject(req.id, req.side, req.price, req.quantity, Reason::InvalidPrice);
       return;
     }
+    if (req.type == OrderType::Limit && !book_.accepts(req.price)) {
+      reject(req.id, req.side, req.price, req.quantity, Reason::BookFull);
+      return;
+    }
 
     const bool is_market = (req.type == OrderType::Market);
     const std::optional<Price> limit =
@@ -145,7 +149,7 @@ private:
       const Price best = book_.best_price(opp);
       if (limit && !crosses(taker_side, *limit, best)) break;
 
-      RestingOrder& maker = book_.front(opp);
+      auto& maker = book_.front(opp);
       const OrderId maker_id = maker.id;
       const Quantity exec = std::min(qty, maker.qty);
       const Quantity maker_remaining = maker.qty - exec;

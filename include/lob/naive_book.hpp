@@ -97,6 +97,9 @@ public:
     return index_.find(id) != index_.end();
   }
 
+  // The naive book has no price band, so every price is acceptable.
+  [[nodiscard]] static constexpr bool accepts(Price) noexcept { return true; }
+
   [[nodiscard]] Quantity available_against(Side aggressor,
                                            std::optional<Price> limit) const {
     Quantity total = 0;

@@ -1,0 +1,63 @@
+#pragma once
+
+#include <cstdint>
+
+#include "lob/object_pool.hpp"
+#include "lob/types.hpp"
+
+namespace lob {
+
+// A resting order stored in the pool. `id` and `qty` come first so the matching
+// engine can read them generically (the same way it reads RestingOrder from the
+// naive book). `prev`/`next` are intrusive list links expressed as pool indices.
+struct Order {
+  OrderId id{kInvalidOrderId};
+  Quantity qty{0};
+  Price price{0}; // tick price -> used to find the level on cancel/modify
+  Side side{Side::Buy};
+  std::uint32_t prev{kNil};
+  std::uint32_t next{kNil};
+};
+
+// Intrusive FIFO doubly-linked list of orders resting at one price.
+//
+// Time priority is preserved by always appending at the tail and matching from
+// the head. All operations are O(1); `total_qty` is kept current so the book can
+// answer fill-or-kill availability and depth queries without walking the list.
+struct PriceLevel {
+  std::uint32_t head{kNil};
+  std::uint32_t tail{kNil};
+  Quantity total_qty{0};
+
+  [[nodiscard]] bool empty() const noexcept { return head == kNil; }
+
+  void push_back(ObjectPool<Order>& pool, std::uint32_t node) {
+    Order& o = pool[node];
+    o.prev = tail;
+    o.next = kNil;
+    if (tail == kNil) {
+      head = node;
+    } else {
+      pool[tail].next = node;
+    }
+    tail = node;
+    total_qty += o.qty;
+  }
+
+  void unlink(ObjectPool<Order>& pool, std::uint32_t node) {
+    const Order& o = pool[node];
+    if (o.prev == kNil) {
+      head = o.next;
+    } else {
+      pool[o.prev].next = o.next;
+    }
+    if (o.next == kNil) {
+      tail = o.prev;
+    } else {
+      pool[o.next].prev = o.prev;
+    }
+    total_qty -= o.qty;
+  }
+};
+
+} // namespace lob

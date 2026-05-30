@@ -119,6 +119,14 @@ public:
 
   [[nodiscard]] std::size_t size() const { return index_.size(); }
 
+  // Sum of all resting quantity (test/debug helper for conservation checks).
+  [[nodiscard]] Quantity total_quantity() const {
+    Quantity t = 0;
+    for (const auto& [price, level] : bids_) t += level_qty(level);
+    for (const auto& [price, level] : asks_) t += level_qty(level);
+    return t;
+  }
+
 private:
   struct Locator {
     Side side;

@@ -165,6 +165,13 @@ public:
 
   [[nodiscard]] std::size_t size() const noexcept { return index_.size(); }
 
+  // Sum of all resting quantity (test/debug helper for conservation checks).
+  [[nodiscard]] Quantity total_quantity() const {
+    Quantity t = 0;
+    for (const auto& level : levels_) t += level.total_qty;
+    return t;
+  }
+
 private:
   [[nodiscard]] Price to_price(std::int64_t idx) const noexcept {
     return min_price_ + idx;

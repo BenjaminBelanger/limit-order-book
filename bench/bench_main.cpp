@@ -1,0 +1,232 @@
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <functional>
+#include <numeric>
+#include <random>
+#include <thread>
+#include <vector>
+
+#include "bench_util.hpp"
+#include "tsc_clock.hpp"
+#include "lob/matching_engine.hpp"
+#include "lob/naive_book.hpp"
+#include "lob/order_book.hpp"
+#include "lob/spsc_ring.hpp"
+#include "lob/types.hpp"
+
+using namespace lob;
+using bench::Clock;
+using bench::NullSink;
+using bench::Stats;
+
+namespace {
+
+double seconds(Clock::duration d) {
+  return std::chrono::duration<double>(d).count();
+}
+
+constexpr Price kLo = 1;
+constexpr Price kHi = 1'000'000;
+constexpr std::size_t kPriceSpan = 1u << 16; // distinct prices touched
+
+double g_overhead = 0.0; // rdtsc read overhead, in nanoseconds
+bench::TscClock g_tsc;
+
+std::uint64_t sample_ns(std::uint64_t c0, std::uint64_t c1) {
+  const double ns = g_tsc.to_ns(c1 - c0) - g_overhead;
+  return ns > 0 ? static_cast<std::uint64_t>(ns) : 0;
+}
+
+// ---- add: insert resting orders, no matching ---------------------------------
+template <class Book, class Factory>
+void bench_add(Factory make, std::size_t n, Stats& lat, double& tput) {
+  { // throughput pass (no per-op clock)
+    Book book = make();
+    NullSink sink;
+    MatchingEngine<Book, NullSink> eng(book, sink);
+    const auto t0 = Clock::now();
+    for (std::size_t i = 0; i < n; ++i) {
+      const Price p = kLo + static_cast<Price>(i & (kPriceSpan - 1));
+      eng.submit(OrderRequest{i + 1, Side::Buy, OrderType::Limit, p, 1});
+    }
+    tput = static_cast<double>(n) / seconds(Clock::now() - t0);
+  }
+  { // latency pass (per-op clock)
+    Book book = make();
+    NullSink sink;
+    MatchingEngine<Book, NullSink> eng(book, sink);
+    std::vector<std::uint64_t> s;
+    s.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      const Price p = kLo + static_cast<Price>(i & (kPriceSpan - 1));
+      const auto a = g_tsc.now();
+      eng.submit(OrderRequest{i + 1, Side::Buy, OrderType::Limit, p, 1});
+      s.push_back(sample_ns(a, g_tsc.now()));
+    }
+    lat = bench::summarize(s);
+  }
+}
+
+// ---- cancel: remove resting orders in randomized order -----------------------
+template <class Book, class Factory>
+void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput) {
+  std::vector<OrderId> ids(n);
+  std::iota(ids.begin(), ids.end(), OrderId{1});
+  std::shuffle(ids.begin(), ids.end(), std::mt19937(12345));
+
+  const auto prefill = [&](MatchingEngine<Book, NullSink>& eng) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const Price p = kLo + static_cast<Price>(i & (kPriceSpan - 1));
+      eng.submit(OrderRequest{i + 1, Side::Buy, OrderType::Limit, p, 1});
+    }
+  };
+  { // throughput
+    Book book = make();
+    NullSink sink;
+    MatchingEngine<Book, NullSink> eng(book, sink);
+    prefill(eng);
+    const auto t0 = Clock::now();
+    for (OrderId id : ids) eng.cancel(id);
+    tput = static_cast<double>(n) / seconds(Clock::now() - t0);
+  }
+  { // latency
+    Book book = make();
+    NullSink sink;
+    MatchingEngine<Book, NullSink> eng(book, sink);
+    prefill(eng);
+    std::vector<std::uint64_t> s;
+    s.reserve(n);
+    for (OrderId id : ids) {
+      const auto a = g_tsc.now();
+      eng.cancel(id);
+      s.push_back(sample_ns(a, g_tsc.now()));
+    }
+    lat = bench::summarize(s);
+  }
+}
+
+// ---- match: aggressive orders each consume one resting order -----------------
+template <class Book, class Factory>
+void bench_match(Factory make, std::size_t n, Stats& lat, double& tput) {
+  const auto prefill = [&](MatchingEngine<Book, NullSink>& eng) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const Price p = kLo + static_cast<Price>(i & (kPriceSpan - 1));
+      eng.submit(OrderRequest{i + 1, Side::Sell, OrderType::Limit, p, 1});
+    }
+  };
+  { // throughput
+    Book book = make();
+    NullSink sink;
+    MatchingEngine<Book, NullSink> eng(book, sink);
+    prefill(eng);
+    const auto t0 = Clock::now();
+    for (std::size_t i = 0; i < n; ++i) {
+      eng.submit(OrderRequest{n + i + 1, Side::Buy, OrderType::Ioc, kHi, 1});
+    }
+    tput = static_cast<double>(n) / seconds(Clock::now() - t0);
+  }
+  { // latency
+    Book book = make();
+    NullSink sink;
+    MatchingEngine<Book, NullSink> eng(book, sink);
+    prefill(eng);
+    std::vector<std::uint64_t> s;
+    s.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto a = g_tsc.now();
+      eng.submit(OrderRequest{n + i + 1, Side::Buy, OrderType::Ioc, kHi, 1});
+      s.push_back(sample_ns(a, g_tsc.now()));
+    }
+    lat = bench::summarize(s);
+  }
+}
+
+template <class Book, class Factory>
+void run_suite(const char* label, Factory make, std::size_t n) {
+  // Warm up caches / branch predictors before measuring.
+  Stats warm_l;
+  double warm_t = 0;
+  bench_add<Book>(make, n / 10, warm_l, warm_t);
+
+  Stats add_l, cancel_l, match_l;
+  double add_t = 0, cancel_t = 0, match_t = 0;
+  bench_add<Book>(make, n, add_l, add_t);
+  bench_cancel<Book>(make, n, cancel_l, cancel_t);
+  bench_match<Book>(make, n, match_l, match_t);
+
+  bench::print_header(label);
+  bench::print_row("add", add_l, add_t);
+  bench::print_row("cancel", cancel_l, cancel_t);
+  bench::print_row("match", match_l, match_t);
+}
+
+// ---- SPSC ingestion pipeline -------------------------------------------------
+// Producer thread enqueues orders; consumer thread pops and feeds the engine.
+// Orders alternate buy/sell at one price so they match immediately and the book
+// stays tiny -- this measures the end-to-end ingestion + match pipeline rate.
+double bench_spsc(std::size_t n) {
+  SpscRing<OrderRequest> ring(1u << 16);
+  BookConfig cfg{90, 110, 1024};
+  FlatBook book(cfg);
+  NullSink sink;
+  MatchingEngine<FlatBook, NullSink> eng(book, sink);
+
+  std::atomic<bool> start{false};
+  std::thread producer([&] {
+    while (!start.load(std::memory_order_acquire)) {}
+    for (std::size_t i = 0; i < n; ++i) {
+      OrderRequest r{i + 1, (i & 1) ? Side::Sell : Side::Buy, OrderType::Ioc,
+                     100, 1};
+      while (!ring.try_push(r)) {}
+    }
+  });
+
+  start.store(true, std::memory_order_release);
+  const auto t0 = Clock::now();
+  std::size_t processed = 0;
+  OrderRequest r{};
+  while (processed < n) {
+    if (ring.try_pop(r)) {
+      eng.submit(r);
+      ++processed;
+    }
+  }
+  const double elapsed = seconds(Clock::now() - t0);
+  producer.join();
+  return static_cast<double>(n) / elapsed;
+}
+
+} // namespace
+
+int main() {
+  bench::pin_and_boost();
+  g_tsc.calibrate();
+
+  // Measure rdtsc read overhead (subtracted from latency samples).
+  {
+    constexpr int kIters = 200'000;
+    std::uint64_t acc = 0;
+    for (int i = 0; i < kIters; ++i) {
+      const auto a = g_tsc.now();
+      acc += g_tsc.now() - a;
+    }
+    g_overhead = g_tsc.to_ns(acc / kIters);
+  }
+
+  constexpr std::size_t kN = 1'000'000;
+  std::printf("Limit Order Book microbenchmarks\n");
+  std::printf("TSC ~ %.2f GHz | rdtsc read overhead ~ %.1f ns (subtracted)\n",
+              g_tsc.ghz(), g_overhead);
+
+  const auto make_flat = [] {
+    return FlatBook(BookConfig{kLo, kHi, kN + 16});
+  };
+  run_suite<FlatBook>("FlatBook (optimized)", make_flat, kN);
+
+  const double spsc = bench_spsc(10'000'000);
+  std::printf("\n=== SPSC ingestion pipeline (1 producer -> 1 consumer) ===\n");
+  std::printf("alternating IOC orders, end-to-end: %.2f M orders/s\n",
+              spsc / 1e6);
+  return 0;
+}

@@ -1,3 +1,6 @@
 # Benchmarks build to standalone executables (no test framework dependency).
-add_executable(smoke_bench smoke_bench.cpp)
-target_link_libraries(smoke_bench PRIVATE lob)
+find_package(Threads REQUIRED)
+
+add_executable(bench_main bench_main.cpp)
+target_link_libraries(bench_main PRIVATE lob Threads::Threads)
+target_include_directories(bench_main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

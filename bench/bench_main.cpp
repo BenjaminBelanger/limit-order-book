@@ -142,23 +142,28 @@ void bench_match(Factory make, std::size_t n, Stats& lat, double& tput) {
   }
 }
 
+struct SuiteResult {
+  Stats add, cancel, match;
+  double add_t{0}, cancel_t{0}, match_t{0};
+};
+
 template <class Book, class Factory>
-void run_suite(const char* label, Factory make, std::size_t n) {
+SuiteResult run_suite(const char* label, Factory make, std::size_t n) {
   // Warm up caches / branch predictors before measuring.
   Stats warm_l;
   double warm_t = 0;
   bench_add<Book>(make, n / 10, warm_l, warm_t);
 
-  Stats add_l, cancel_l, match_l;
-  double add_t = 0, cancel_t = 0, match_t = 0;
-  bench_add<Book>(make, n, add_l, add_t);
-  bench_cancel<Book>(make, n, cancel_l, cancel_t);
-  bench_match<Book>(make, n, match_l, match_t);
+  SuiteResult r;
+  bench_add<Book>(make, n, r.add, r.add_t);
+  bench_cancel<Book>(make, n, r.cancel, r.cancel_t);
+  bench_match<Book>(make, n, r.match, r.match_t);
 
   bench::print_header(label);
-  bench::print_row("add", add_l, add_t);
-  bench::print_row("cancel", cancel_l, cancel_t);
-  bench::print_row("match", match_l, match_t);
+  bench::print_row("add", r.add, r.add_t);
+  bench::print_row("cancel", r.cancel, r.cancel_t);
+  bench::print_row("match", r.match, r.match_t);
+  return r;
 }
 
 // ---- SPSC ingestion pipeline -------------------------------------------------
@@ -222,7 +227,21 @@ int main() {
   const auto make_flat = [] {
     return FlatBook(BookConfig{kLo, kHi, kN + 16});
   };
-  run_suite<FlatBook>("FlatBook (optimized)", make_flat, kN);
+  const auto make_naive = [] { return NaiveBook(); };
+
+  const SuiteResult flat = run_suite<FlatBook>("FlatBook (optimized)", make_flat, kN);
+  const SuiteResult naive =
+      run_suite<NaiveBook>("NaiveBook (std::map baseline)", make_naive, kN);
+
+  std::printf("\n=== Speedup (optimized vs naive, throughput) ===\n");
+  std::printf("%-14s %12s %12s %10s\n", "operation", "flat M/s", "naive M/s",
+              "speedup");
+  std::printf("%-14s %12.2f %12.2f %9.2fx\n", "add", flat.add_t / 1e6,
+              naive.add_t / 1e6, flat.add_t / naive.add_t);
+  std::printf("%-14s %12.2f %12.2f %9.2fx\n", "cancel", flat.cancel_t / 1e6,
+              naive.cancel_t / 1e6, flat.cancel_t / naive.cancel_t);
+  std::printf("%-14s %12.2f %12.2f %9.2fx\n", "match", flat.match_t / 1e6,
+              naive.match_t / 1e6, flat.match_t / naive.match_t);
 
   const double spsc = bench_spsc(10'000'000);
   std::printf("\n=== SPSC ingestion pipeline (1 producer -> 1 consumer) ===\n");

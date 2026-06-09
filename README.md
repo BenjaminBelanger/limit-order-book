@@ -147,6 +147,17 @@ microseconds (tree rebalancing + node allocation), versus sub-microsecond for `F
 End-to-end producer -> ring -> consumer/engine: **~45 M orders/s** with alternating
 immediately-matching IOC orders.
 
+### Latency by percentile (HdrHistogram)
+
+The benchmark records every operation into a from-scratch **HdrHistogram** and exports a
+latency-by-percentile spectrum to `bench/results/hdr_*.csv`. `scripts/plot_latency.py`
+renders it:
+
+![FlatBook latency by percentile](bench/results/latency.png)
+
+The flat median (~115 ns add / ~125 ns match) holds until ~p99.9; the steep rise past
+p99.99 is OS scheduling jitter, not the engine.
+
 Reproduce with:
 
 ```
@@ -194,6 +205,7 @@ Options: `-DLOB_NATIVE_ARCH=OFF` disables `-march=native`; `-DLOB_BUILD_TESTS=OF
 | `structures_test` | `ObjectPool`, `FlatHashIndex` (incl. collision/delete stress), intrusive `PriceLevel`. |
 | `property_test` | **Differential** test: naive and flat emit byte-identical event streams over thousands of random ops across many seeds. **Invariants:** book never crossed, quantity conservation. |
 | `spsc_test` | Ring buffer single-thread semantics + a concurrent producer/consumer delivering 1M items in order. |
+| `hdr_test` | HdrHistogram correctness: counts, `for_each`, and percentiles within HDR precision of a sorted reference. |
 
 ---
 
@@ -220,5 +232,6 @@ Options: `-DLOB_NATIVE_ARCH=OFF` disables `-march=native`; `-DLOB_BUILD_TESTS=OF
 
 - [ ] **NASDAQ ITCH 5.0 parser**: consume the public sample feed, reconstruct the book, and
       replay it through the engine at line rate; report reconstruction throughput.
-- [ ] **HdrHistogram + plots**: richer latency histograms and a simple visualization.
+- [x] **HdrHistogram + plots**: latency histograms with a percentile-spectrum chart
+      (`include/lob/hdr_histogram.hpp`, `scripts/plot_latency.py`).
 - [x] **Naive vs optimized comparison benchmark** (implemented; see results above).

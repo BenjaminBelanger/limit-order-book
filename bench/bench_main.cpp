@@ -1,6 +1,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <numeric>
 #include <random>
@@ -9,6 +11,7 @@
 
 #include "bench_util.hpp"
 #include "tsc_clock.hpp"
+#include "lob/hdr_histogram.hpp"
 #include "lob/matching_engine.hpp"
 #include "lob/naive_book.hpp"
 #include "lob/order_book.hpp"
@@ -40,7 +43,8 @@ std::uint64_t sample_ns(std::uint64_t c0, std::uint64_t c1) {
 
 // ---- add: insert resting orders, no matching ---------------------------------
 template <class Book, class Factory>
-void bench_add(Factory make, std::size_t n, Stats& lat, double& tput) {
+void bench_add(Factory make, std::size_t n, Stats& lat, double& tput,
+               HdrHistogram* hist = nullptr) {
   { // throughput pass (no per-op clock)
     Book book = make();
     NullSink sink;
@@ -62,7 +66,9 @@ void bench_add(Factory make, std::size_t n, Stats& lat, double& tput) {
       const Price p = kLo + static_cast<Price>(i & (kPriceSpan - 1));
       const auto a = g_tsc.now();
       eng.submit(OrderRequest{i + 1, Side::Buy, OrderType::Limit, p, 1});
-      s.push_back(sample_ns(a, g_tsc.now()));
+      const std::uint64_t ns = sample_ns(a, g_tsc.now());
+      s.push_back(ns);
+      if (hist) hist->record(static_cast<std::int64_t>(ns));
     }
     lat = bench::summarize(s);
   }
@@ -70,7 +76,8 @@ void bench_add(Factory make, std::size_t n, Stats& lat, double& tput) {
 
 // ---- cancel: remove resting orders in randomized order -----------------------
 template <class Book, class Factory>
-void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput) {
+void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput,
+                  HdrHistogram* hist = nullptr) {
   std::vector<OrderId> ids(n);
   std::iota(ids.begin(), ids.end(), OrderId{1});
   std::shuffle(ids.begin(), ids.end(), std::mt19937(12345));
@@ -100,7 +107,9 @@ void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput) {
     for (OrderId id : ids) {
       const auto a = g_tsc.now();
       eng.cancel(id);
-      s.push_back(sample_ns(a, g_tsc.now()));
+      const std::uint64_t ns = sample_ns(a, g_tsc.now());
+      s.push_back(ns);
+      if (hist) hist->record(static_cast<std::int64_t>(ns));
     }
     lat = bench::summarize(s);
   }
@@ -108,7 +117,8 @@ void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput) {
 
 // ---- match: aggressive orders each consume one resting order -----------------
 template <class Book, class Factory>
-void bench_match(Factory make, std::size_t n, Stats& lat, double& tput) {
+void bench_match(Factory make, std::size_t n, Stats& lat, double& tput,
+                 HdrHistogram* hist = nullptr) {
   const auto prefill = [&](MatchingEngine<Book, NullSink>& eng) {
     for (std::size_t i = 0; i < n; ++i) {
       const Price p = kLo + static_cast<Price>(i & (kPriceSpan - 1));
@@ -136,7 +146,9 @@ void bench_match(Factory make, std::size_t n, Stats& lat, double& tput) {
     for (std::size_t i = 0; i < n; ++i) {
       const auto a = g_tsc.now();
       eng.submit(OrderRequest{n + i + 1, Side::Buy, OrderType::Ioc, kHi, 1});
-      s.push_back(sample_ns(a, g_tsc.now()));
+      const std::uint64_t ns = sample_ns(a, g_tsc.now());
+      s.push_back(ns);
+      if (hist) hist->record(static_cast<std::int64_t>(ns));
     }
     lat = bench::summarize(s);
   }
@@ -164,6 +176,22 @@ SuiteResult run_suite(const char* label, Factory make, std::size_t n) {
   bench::print_row("cancel", r.cancel, r.cancel_t);
   bench::print_row("match", r.match, r.match_t);
   return r;
+}
+
+// Export a histogram as a latency-by-percentile spectrum CSV (HdrHistogram
+// style): each row is a percentile and the latency at or below which that
+// fraction of operations completed. A plotting script turns these into a chart.
+void export_hdr(const std::string& op, const HdrHistogram& h) {
+  namespace fs = std::filesystem;
+  fs::create_directories("bench/results");
+  std::ofstream out("bench/results/hdr_" + op + ".csv");
+  out << "percentile,latency_ns\n";
+  static const double kPercentiles[] = {
+      0,    10,   20,   30,   40,   50,    60,    70,    80,     90,
+      95,   97.5, 99,   99.5, 99.9, 99.95, 99.99, 99.999, 100.0};
+  for (double p : kPercentiles) {
+    out << p << "," << h.value_at_percentile(p) << "\n";
+  }
 }
 
 // ---- SPSC ingestion pipeline -------------------------------------------------
@@ -242,6 +270,32 @@ int main() {
               naive.cancel_t / 1e6, flat.cancel_t / naive.cancel_t);
   std::printf("%-14s %12.2f %12.2f %9.2fx\n", "match", flat.match_t / 1e6,
               naive.match_t / 1e6, flat.match_t / naive.match_t);
+
+  // ---- HDR latency capture + CSV export (for plotting) -----------------------
+  {
+    HdrHistogram h_add, h_cancel, h_match;
+    Stats tmp;
+    double tmp_t = 0;
+    bench_add<FlatBook>(make_flat, kN, tmp, tmp_t, &h_add);
+    bench_cancel<FlatBook>(make_flat, kN, tmp, tmp_t, &h_cancel);
+    bench_match<FlatBook>(make_flat, kN, tmp, tmp_t, &h_match);
+    export_hdr("add", h_add);
+    export_hdr("cancel", h_cancel);
+    export_hdr("match", h_match);
+    std::printf("\n=== HDR latency (FlatBook) -> bench/results/hdr_*.csv ===\n");
+    std::printf("%-8s %8s %8s %8s %10s\n", "op", "p50", "p99", "p99.9",
+                "p99.99");
+    const auto row = [](const char* op, const HdrHistogram& h) {
+      std::printf("%-8s %8lld %8lld %8lld %10lld\n", op,
+                  static_cast<long long>(h.value_at_percentile(50)),
+                  static_cast<long long>(h.value_at_percentile(99)),
+                  static_cast<long long>(h.value_at_percentile(99.9)),
+                  static_cast<long long>(h.value_at_percentile(99.99)));
+    };
+    row("add", h_add);
+    row("cancel", h_cancel);
+    row("match", h_match);
+  }
 
   const double spsc = bench_spsc(10'000'000);
   std::printf("\n=== SPSC ingestion pipeline (1 producer -> 1 consumer) ===\n");

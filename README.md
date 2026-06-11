@@ -72,6 +72,8 @@ fuzz test prove they behave identically, and lets the benchmark quantify the spe
 | `include/lob/object_pool.hpp` | Fixed-capacity pool with O(1) free list. |
 | `include/lob/flat_hash.hpp` | Open-addressing `OrderId -> slot` index (backward-shift delete). |
 | `include/lob/spsc_ring.hpp` | Lock-free single-producer/single-consumer ring buffer. |
+| `include/lob/hdr_histogram.hpp` | From-scratch HdrHistogram for latency capture. |
+| `include/lob/itch.hpp` / `itch_replayer.hpp` / `itch_writer.hpp` | NASDAQ ITCH 5.0 parser, book-reconstruction replayer, and message encoder. |
 
 ---
 
@@ -158,7 +160,26 @@ renders it:
 The flat median (~115 ns add / ~125 ns match) holds until ~p99.9; the steep rise past
 p99.99 is OS scheduling jitter, not the engine.
 
-Reproduce with:
+### NASDAQ ITCH 5.0 reconstruction
+
+An ITCH 5.0 parser (`include/lob/itch.hpp`) decodes the length-prefixed BinaryFILE feed
+and a replayer reconstructs the displayable book by applying add/execute/cancel/delete/
+replace messages directly to a `FlatBook`. The official NASDAQ sample feeds are
+multi-gigabyte, so `itch_gen` produces a spec-faithful synthetic stream to exercise the
+pipeline end-to-end:
+
+```
+./build/itch/itch_gen   data/synthetic.itch 5000000   # ~160 MB, 5M messages
+./build/itch/itch_replay data/synthetic.itch
+```
+
+Reconstruction throughput: **~7 M messages/s (~220 MB/s)**, single-threaded. To run a real
+feed, download a NASDAQ ITCH 5.0 sample, `gunzip` it, and pass the path to `itch_replay`.
+*(ITCH prices are scaled to cents to fit the flat tick band - the same band tradeoff
+described above. The synthetic feed places orders at random prices, so its reconstructed
+book may be crossed; real post-match feeds are not.)*
+
+Reproduce the microbenchmarks with:
 
 ```
 cmake --build build --target bench_main
@@ -206,6 +227,7 @@ Options: `-DLOB_NATIVE_ARCH=OFF` disables `-march=native`; `-DLOB_BUILD_TESTS=OF
 | `property_test` | **Differential** test: naive and flat emit byte-identical event streams over thousands of random ops across many seeds. **Invariants:** book never crossed, quantity conservation. |
 | `spsc_test` | Ring buffer single-thread semantics + a concurrent producer/consumer delivering 1M items in order. |
 | `hdr_test` | HdrHistogram correctness: counts, `for_each`, and percentiles within HDR precision of a sorted reference. |
+| `itch_test` | ITCH 5.0 round-trip: encode a stream, parse + replay it, and verify the reconstructed book (BBO, sizes, quantities) and out-of-band skipping. |
 
 ---
 
@@ -230,8 +252,9 @@ Options: `-DLOB_NATIVE_ARCH=OFF` disables `-march=native`; `-DLOB_BUILD_TESTS=OF
 
 ## Roadmap (stretch goals)
 
-- [ ] **NASDAQ ITCH 5.0 parser**: consume the public sample feed, reconstruct the book, and
-      replay it through the engine at line rate; report reconstruction throughput.
+- [x] **NASDAQ ITCH 5.0 parser**: decodes the feed and reconstructs the book at
+      ~7 M msgs/s (`include/lob/itch*.hpp`, `itch/`). Synthetic generator included; points
+      at the real sample feed too.
 - [x] **HdrHistogram + plots**: latency histograms with a percentile-spectrum chart
       (`include/lob/hdr_histogram.hpp`, `scripts/plot_latency.py`).
 - [x] **Naive vs optimized comparison benchmark** (implemented; see results above).

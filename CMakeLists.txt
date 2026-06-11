@@ -42,3 +42,9 @@ option(LOB_BUILD_BENCH "Build benchmarks" ON)
 if(LOB_BUILD_BENCH)
   add_subdirectory(bench)
 endif()
+
+# ---- ITCH 5.0 demo tools -----------------------------------------------------
+option(LOB_BUILD_ITCH "Build ITCH 5.0 generator/replay tools" ON)
+if(LOB_BUILD_ITCH)
+  add_subdirectory(itch)
+endif()

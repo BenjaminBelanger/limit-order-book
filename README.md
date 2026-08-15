@@ -119,6 +119,21 @@ slots from a free list.
 backward-shift deletion (no tombstones), sized once to keep the load factor below ~0.5.
 This avoids the per-node allocation and pointer chasing of `std::unordered_map`.
 
+**Fill-or-kill costs `O(band)`, not `O(depth)`.** FOK has to know the total available
+quantity before it trades anything, and `available_against` gets that by sweeping the flat
+level array from the touch to the limit price. That sweep is proportional to the *price
+band*, not to how many orders actually rest in it. Holding book contents fixed at 1,000
+resting orders and varying only the configured band:
+
+| band (levels) | 1,000 | 10,000 | 100,000 | 1,000,000 |
+|---------------|------:|-------:|--------:|----------:|
+| FOK latency   | 141 ns | 1.6 us | 16.6 us | 271 us |
+
+So at the default 100,000-tick band a FOK costs ~230x an add. The microbenchmarks above
+cover add/cancel/match only and do not include FOK. Keeping a per-side running total, or a
+sparse occupied-level structure, would fix this; the current code trades it away for a
+simpler hot path on the operations that dominate real order flow.
+
 **Lock-free SPSC ring.** The ingestion path is a bounded ring buffer using acquire/release
 ordering (no locks, no CAS loops). `head`/`tail` sit on separate cache lines and each side
 caches the other's index, so the steady state avoids false sharing and contended atomic
@@ -134,33 +149,48 @@ observer.
 ## Benchmark results
 
 Single-threaded, pinned core. Built with **g++ 13.2 (MinGW-W64)**, `-O3 -march=native`,
-C++20. Latency measured with an x86 **TSC** timer (rdtsc), ~3.3 GHz, read overhead
-subtracted. 1,000,000 operations per measurement. *Numbers vary run-to-run; the `max`
-column reflects rare OS scheduling outliers (no real-time scheduling on Windows).*
+C++20. Latency measured with an x86 **TSC** timer (rdtsc), ~3.49 GHz, read overhead
+subtracted. 1,000,000 operations per measurement, median of 3 runs. *Numbers vary
+run-to-run; the `max` column reflects rare OS scheduling outliers (no real-time scheduling
+on Windows).*
 
 ### FlatBook (optimized) - per-operation latency
 
 | operation | p50 (ns) | p99 (ns) | p99.9 (ns) | throughput |
 |-----------|---------:|---------:|-----------:|-----------:|
-| add       | ~115 | ~420 | ~950  | ~17 M ops/s |
-| cancel    | ~250 | ~700 | ~1900 | ~10 M ops/s |
-| match     | ~125 | ~450 | ~1100 | ~13 M ops/s |
+| add       | ~73  | ~218 | ~290 | ~42 M ops/s |
+| cancel    | ~155 | ~330 | ~440 | ~25 M ops/s |
+| match     | ~81  | ~229 | ~291 | ~33 M ops/s |
 
 ### Optimized vs naive `std::map` (throughput speedup)
 
 | operation | FlatBook | NaiveBook | speedup |
 |-----------|---------:|----------:|--------:|
-| add       | ~17 M/s | ~3.3 M/s | **~5x**  |
-| cancel    | ~10 M/s | ~0.9 M/s | **~11x** |
-| match     | ~13 M/s | ~5.9 M/s | **~2x**  |
+| add       | ~42 M/s | ~7.8 M/s | **~5.5x** |
+| cancel    | ~25 M/s | ~2.3 M/s | **~11x**  |
+| match     | ~33 M/s | ~23 M/s  | **~1.4x** |
 
-The tail is where the flat design shines most: the naive book's add p99.9 is tens of
-microseconds (tree rebalancing + node allocation), versus sub-microsecond for `FlatBook`.
+**Where the flat layout wins, and where it doesn't.** The gains are not uniform, and the
+match column is the honest counter-example:
+
+* **add** is the clearest win, and the tail more than the median: naive add p99.9 is
+  ~17,000 ns (tree rebalancing + a node allocation per level) against ~290 ns for
+  `FlatBook` - roughly **60x** better at p99.9 for ~1.1x better median.
+* **cancel** is a solid win at both ends (~2.8x median, ~9x p99.9), because the naive path
+  pays an `unordered_map` lookup plus a list-node free.
+* **match** is nearly a wash on throughput (~1.4x) and `NaiveBook` actually has the *better
+  median* (~44 ns vs ~81 ns), with p99.9 comparable (~400 ns vs ~291 ns). Matching repeatedly
+  hits the same best level, which stays hot in cache and is `map.begin()` on the naive side,
+  so the flat array's indexing advantage mostly disappears - while `advance_best` still has
+  to scan for the next occupied level when one empties. The flat design buys tail latency on
+  add/cancel, not raw matching speed.
 
 ### SPSC ingestion pipeline
 
-End-to-end producer -> ring -> consumer/engine: **~45 M orders/s** with alternating
-immediately-matching IOC orders.
+End-to-end producer -> ring -> consumer/engine: **~32 M orders/s** (median of 7 runs;
+range 26-51 M/s) with alternating immediately-matching IOC orders. This measurement is
+much noisier than the single-threaded ones because it depends on how the OS schedules the
+two threads.
 
 ### Latency by percentile (HdrHistogram)
 
@@ -170,7 +200,7 @@ renders it:
 
 ![FlatBook latency by percentile](bench/results/latency.png)
 
-The flat median (~115 ns add / ~125 ns match) holds until ~p99.9; the steep rise past
+The flat median (~73 ns add / ~81 ns match) holds until ~p99.9; the steep rise past
 p99.99 is OS scheduling jitter, not the engine.
 
 ### NASDAQ ITCH 5.0 reconstruction
@@ -186,11 +216,14 @@ pipeline end-to-end:
 ./build/itch/itch_replay data/synthetic.itch
 ```
 
-Reconstruction throughput: **~7 M messages/s (~220 MB/s)**, single-threaded. To run a real
+Reconstruction throughput: **~23 M messages/s (~745 MB/s)**, single-threaded. To run a real
 feed, download a NASDAQ ITCH 5.0 sample, `gunzip` it, and pass the path to `itch_replay`.
 *(ITCH prices are scaled to cents to fit the flat tick band - the same band tradeoff
 described above. The synthetic feed places orders at random prices, so its reconstructed
-book may be crossed; real post-match feeds are not.)*
+book may be crossed; real post-match feeds are not. Note that the replayer applies feed
+messages directly to the book rather than running them through the matching engine, and
+the synthetic stream is produced by this repo's own writer - so this exercises the parser
+and the book, not agreement with real NASDAQ data.)*
 
 Reproduce the microbenchmarks with:
 
@@ -246,10 +279,13 @@ Options: `-DLOB_NATIVE_ARCH=OFF` disables `-march=native`; `-DLOB_BUILD_TESTS=OF
 
 ## What I learned
 
-* **Data-structure choice dominates.** Swapping `std::map`/`std::unordered_map` for flat
-  arrays, intrusive lists, an object pool, and an open-addressing index produced ~5-11x
-  throughput gains and an order-of-magnitude better tail latency - without changing the
-  matching algorithm at all.
+* **Data-structure choice dominates - but not everywhere.** Swapping
+  `std::map`/`std::unordered_map` for flat arrays, intrusive lists, an object pool, and an
+  open-addressing index produced ~5.5x (add) and ~11x (cancel) throughput gains and ~60x
+  better p99.9 on add, without changing the matching algorithm at all. Matching itself
+  barely moved (~1.4x), because it hammers one cache-hot level that `std::map` reaches
+  through `begin()` just as cheaply. Knowing *which* operation a layout actually helps
+  turned out to matter more than the layout.
 * **The tail tells the truth.** Average throughput hid the real story; the naive book's
   p99.9 blew up from allocation and tree rebalancing. Measuring p99/p99.9 (not just the
   mean) is essential for anything latency-sensitive.
@@ -260,14 +296,3 @@ Options: `-DLOB_NATIVE_ARCH=OFF` disables `-march=native`; `-DLOB_BUILD_TESTS=OF
   test and kept the benchmark honest (identical logic, swappable storage).
 * **Mechanical sympathy in the ring buffer** - cache-line separation of head/tail and
   caching the peer index - matters a lot for SPSC throughput.
-
----
-
-## Roadmap (stretch goals)
-
-- [x] **NASDAQ ITCH 5.0 parser**: decodes the feed and reconstructs the book at
-      ~7 M msgs/s (`include/lob/itch*.hpp`, `itch/`). Synthetic generator included; points
-      at the real sample feed too.
-- [x] **HdrHistogram + plots**: latency histograms with a percentile-spectrum chart
-      (`include/lob/hdr_histogram.hpp`, `scripts/plot_latency.py`).
-- [x] **Naive vs optimized comparison benchmark** (implemented; see results above).

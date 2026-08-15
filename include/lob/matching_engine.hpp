@@ -5,25 +5,23 @@
 
 #include "lob/types.hpp"
 
-// Generic price-time-priority matching engine.
-//
 // The engine is templated on a `Book` backend and an `EventHandler` sink so the
-// exact same matching logic runs on the naive std::map book and the optimized
-// flat-array book. This guarantees identical behaviour and makes differential
-// testing meaningful.
+// exact same matching logic runs on both backends, which is what makes the
+// differential test meaningful. Neither requirement is a C++ concept, so the
+// duck-typed Book interface is spelled out here:
 //
-// Required Book interface:
 //   std::optional<Price> best_bid() const;
 //   std::optional<Price> best_ask() const;
 //   bool                 side_empty(Side) const;
 //   Price                best_price(Side) const;        // precondition: !side_empty
 //   RestingOrder&        front(Side);                   // front FIFO at best level
-//   void                 reduce_front(Side, Quantity);  // remove if it hits zero
+//   void                 reduce_front(Side, Quantity);  // removes it if it hits zero
 //   void                 post(Side, Price, OrderId, Quantity);
 //   std::optional<CancelInfo> cancel(OrderId);
 //   std::optional<CancelInfo> find(OrderId) const;
 //   bool                 reduce_order(OrderId, Quantity);// keeps time priority
 //   bool                 contains(OrderId) const;
+//   bool                 accepts(Price) const;
 //   Quantity             available_against(Side aggressor, std::optional<Price>) const;
 //
 // EventHandler is any callable invocable as `handler(const Event&)`.
@@ -35,7 +33,6 @@ public:
   MatchingEngine(Book& book, EventHandler& handler)
       : book_(book), handler_(handler) {}
 
-  // Submit a new order. See Event model docs in types.hpp.
   void submit(const OrderRequest& req) {
     if (req.id == kInvalidOrderId || book_.contains(req.id)) {
       reject(req.id, req.side, req.price, req.quantity, Reason::DuplicateOrderId);
@@ -89,7 +86,6 @@ public:
     }
   }
 
-  // Cancel a resting order by id.
   void cancel(OrderId id) {
     const std::optional<CancelInfo> info = book_.cancel(id);
     if (!info) {
@@ -100,11 +96,8 @@ public:
          info->qty, 0, Reason::UserRequest);
   }
 
-  // Modify/replace a resting order.
-  //   * unknown id           -> Rejected(UnknownOrder)
-  //   * new_qty == 0         -> equivalent to cancel
-  //   * same price & smaller -> in-place reduce, KEEPS time priority
-  //   * otherwise            -> cancel + re-submit as Limit (LOSES priority)
+  // Only a same-price reduction keeps time priority; anything else is a cancel
+  // plus a re-submit, which sends the order to the back of the new level.
   void modify(OrderId id, Price new_price, Quantity new_qty) {
     const std::optional<CancelInfo> info = book_.find(id);
     if (!info) {
@@ -128,7 +121,6 @@ public:
     submit(OrderRequest{id, side, OrderType::Limit, new_price, new_qty});
   }
 
-  // ---- BBO queries (O(1) on every backend) ----------------------------------
   [[nodiscard]] std::optional<Price> best_bid() const { return book_.best_bid(); }
   [[nodiscard]] std::optional<Price> best_ask() const { return book_.best_ask(); }
 
@@ -140,8 +132,7 @@ public:
   }
 
 private:
-  // Match `qty` of an incoming order against the opposite side, emitting fills.
-  // Returns the unfilled remainder.
+  // Returns the unfilled remainder of `qty`.
   Quantity match(OrderId taker_id, Side taker_side, std::optional<Price> limit,
                  Quantity qty) {
     const Side opp = opposite(taker_side);
@@ -156,7 +147,6 @@ private:
 
       qty -= exec;
 
-      // Maker execution (resting side), then taker execution (aggressor side).
       emit(maker_remaining == 0 ? EventType::Filled : EventType::PartiallyFilled,
            maker_id, taker_id, opp, best, exec, maker_remaining, Reason::None);
       emit(qty == 0 ? EventType::Filled : EventType::PartiallyFilled, taker_id,

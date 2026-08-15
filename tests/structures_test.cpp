@@ -9,7 +9,6 @@
 
 using namespace lob;
 
-// ---- ObjectPool --------------------------------------------------------------
 TEST(ObjectPool, AllocateDeallocateReuse) {
   ObjectPool<Order> pool(4);
   EXPECT_EQ(pool.capacity(), 4u);
@@ -22,8 +21,8 @@ TEST(ObjectPool, AllocateDeallocateReuse) {
 
   pool.deallocate(a);
   EXPECT_EQ(pool.in_use(), 1u);
-  const std::uint32_t c = pool.allocate(); // should reuse the freed slot
-  EXPECT_EQ(c, a);
+  const std::uint32_t c = pool.allocate();
+  EXPECT_EQ(c, a); // the freed slot comes back
 }
 
 TEST(ObjectPool, FullWhenExhausted) {
@@ -33,7 +32,6 @@ TEST(ObjectPool, FullWhenExhausted) {
   EXPECT_TRUE(pool.full());
 }
 
-// ---- FlatHashIndex -----------------------------------------------------------
 TEST(FlatHashIndex, InsertFindErase) {
   FlatHashIndex idx(8);
   idx.insert(1, 100);
@@ -48,7 +46,7 @@ TEST(FlatHashIndex, InsertFindErase) {
   EXPECT_TRUE(idx.erase(2));
   EXPECT_EQ(idx.find(2), nullptr);
   EXPECT_FALSE(idx.erase(2));
-  // Remaining keys still resolve after backward-shift deletion.
+  // Backward-shift deletion moves probe-chain entries, so re-check the rest.
   ASSERT_NE(idx.find(1), nullptr);
   ASSERT_NE(idx.find(3), nullptr);
   EXPECT_EQ(*idx.find(3), 300u);
@@ -69,7 +67,8 @@ TEST(FlatHashIndex, StressManyKeysWithCollisions) {
     idx.insert(k, static_cast<std::uint32_t>(k));
     live.insert(k);
   }
-  // Erase evens, ensure odds remain findable with correct values.
+  // Erasing every other key leaves holes mid-probe-chain, which is where a
+  // tombstone-free open-addressing table goes wrong if the shift is off.
   for (OrderId k = 2; k <= 500; k += 2) {
     EXPECT_TRUE(idx.erase(k));
     live.erase(k);
@@ -86,7 +85,6 @@ TEST(FlatHashIndex, StressManyKeysWithCollisions) {
   EXPECT_EQ(idx.size(), live.size());
 }
 
-// ---- PriceLevel (intrusive FIFO) --------------------------------------------
 TEST(PriceLevel, FifoOrderAndQuantity) {
   ObjectPool<Order> pool(8);
   PriceLevel level;
@@ -102,8 +100,7 @@ TEST(PriceLevel, FifoOrderAndQuantity) {
   }
   EXPECT_EQ(level.total_qty, 60u);
   EXPECT_FALSE(level.empty());
-  // Head is the first inserted (FIFO).
-  EXPECT_EQ(pool[level.head].qty, 10u);
+  EXPECT_EQ(pool[level.head].qty, 10u); // first in is at the head
   EXPECT_EQ(pool[level.tail].qty, 30u);
 }
 
@@ -134,10 +131,10 @@ TEST(PriceLevel, UnlinkHeadAndTail) {
     pool[n[i]].qty = 5;
     level.push_back(pool, n[i]);
   }
-  level.unlink(pool, n[0]); // head
+  level.unlink(pool, n[0]);
   EXPECT_EQ(level.head, n[1]);
   EXPECT_EQ(pool[n[1]].prev, kNil);
-  level.unlink(pool, n[1]); // tail (now only element)
+  level.unlink(pool, n[1]); // now both head and tail
   EXPECT_TRUE(level.empty());
   EXPECT_EQ(level.total_qty, 0u);
 }

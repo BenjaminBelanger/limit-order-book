@@ -1,18 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
 project(limit_order_book LANGUAGES CXX)
 
-# ---- Standard ----------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Default to Release if no build type was specified (single-config generators).
+# Single-config generators leave CMAKE_BUILD_TYPE empty, which would silently
+# build unoptimized and make every benchmark number meaningless.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# ---- Optimization flags ------------------------------------------------------
-# Release: aggressive, machine-tuned. Debug: assertions + symbols.
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
 
@@ -25,25 +23,21 @@ if(LOB_NATIVE_ARCH)
   endif()
 endif()
 
-# ---- Core library (header-only interface for now) ----------------------------
 add_library(lob INTERFACE)
 target_include_directories(lob INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lob INTERFACE cxx_std_20)
 
-# ---- Tests -------------------------------------------------------------------
 option(LOB_BUILD_TESTS "Build unit tests" ON)
 if(LOB_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
 
-# ---- Benchmarks --------------------------------------------------------------
 option(LOB_BUILD_BENCH "Build benchmarks" ON)
 if(LOB_BUILD_BENCH)
   add_subdirectory(bench)
 endif()
 
-# ---- ITCH 5.0 demo tools -----------------------------------------------------
 option(LOB_BUILD_ITCH "Build ITCH 5.0 generator/replay tools" ON)
 if(LOB_BUILD_ITCH)
   add_subdirectory(itch)

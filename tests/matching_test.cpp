@@ -8,8 +8,8 @@
 using namespace lob;
 using namespace lob::test;
 
-// Typed test fixture: every case below runs against each book backend in the
-// type list. Phase 2 adds the optimized FlatBook here for free.
+// Typed fixture: every case below runs once per backend in BookTypes, so the
+// two implementations are held to exactly the same expectations.
 template <class Book>
 class MatchingTest : public ::testing::Test {
 protected:
@@ -21,7 +21,6 @@ protected:
 using BookTypes = ::testing::Types<NaiveBook, FlatBook>;
 TYPED_TEST_SUITE(MatchingTest, BookTypes);
 
-// ---- Resting / BBO -----------------------------------------------------------
 TYPED_TEST(MatchingTest, LimitOrderRestsAndUpdatesBbo) {
   EXPECT_FALSE(this->engine_.best_bid().has_value());
 
@@ -43,7 +42,6 @@ TYPED_TEST(MatchingTest, SpreadComputedFromBbo) {
   EXPECT_EQ(*this->engine_.spread(), 2);
 }
 
-// ---- Basic matching ----------------------------------------------------------
 TYPED_TEST(MatchingTest, FullMatchEmptiesBook) {
   this->engine_.submit(limit(1, Side::Buy, 100, 10));
   this->sink_.clear();
@@ -51,7 +49,7 @@ TYPED_TEST(MatchingTest, FullMatchEmptiesBook) {
   this->engine_.submit(limit(2, Side::Sell, 100, 10));
 
   ASSERT_EQ(this->sink_.events.size(), 2u);
-  EXPECT_EQ(this->sink_.events[0].type, EventType::Filled); // maker
+  EXPECT_EQ(this->sink_.events[0].type, EventType::Filled); // maker leg first
   EXPECT_EQ(this->sink_.events[0].order_id, 1u);
   EXPECT_EQ(this->sink_.events[0].counter_id, 2u);
   EXPECT_EQ(this->sink_.events[0].price, 100);
@@ -94,7 +92,6 @@ TYPED_TEST(MatchingTest, IncomingRemainderPostsAfterPartialMatch) {
   EXPECT_FALSE(this->engine_.best_ask().has_value());
 }
 
-// ---- Price-time priority -----------------------------------------------------
 TYPED_TEST(MatchingTest, TimePriorityFifoAtSamePrice) {
   this->engine_.submit(limit(1, Side::Buy, 100, 5));
   this->engine_.submit(limit(2, Side::Buy, 100, 5)); // later -> behind id 1
@@ -102,7 +99,6 @@ TYPED_TEST(MatchingTest, TimePriorityFifoAtSamePrice) {
 
   this->engine_.submit(limit(3, Side::Sell, 100, 5));
 
-  // First resting order (id 1) must trade first.
   ASSERT_GE(this->sink_.events.size(), 1u);
   EXPECT_EQ(this->sink_.events[0].order_id, 1u);
   EXPECT_EQ(this->sink_.events[0].counter_id, 3u);
@@ -121,7 +117,6 @@ TYPED_TEST(MatchingTest, PricePriorityBestLevelFirst) {
   EXPECT_EQ(*this->engine_.best_ask(), 101); // id 1 remains
 }
 
-// ---- Market orders -----------------------------------------------------------
 TYPED_TEST(MatchingTest, MarketOrderSweepsLevels) {
   this->engine_.submit(limit(1, Side::Sell, 100, 5));
   this->engine_.submit(limit(2, Side::Sell, 101, 5));
@@ -153,7 +148,6 @@ TYPED_TEST(MatchingTest, MarketOrderCancelsLeftoverRemainder) {
   EXPECT_EQ(this->sink_.of_type(EventType::Cancelled)[0].quantity, 2u);
 }
 
-// ---- IOC ---------------------------------------------------------------------
 TYPED_TEST(MatchingTest, IocFillsAvailableAndCancelsRest) {
   this->engine_.submit(limit(1, Side::Sell, 100, 3));
   this->sink_.clear();
@@ -180,7 +174,6 @@ TYPED_TEST(MatchingTest, IocNoMatchCancelsFully) {
   EXPECT_EQ(*this->engine_.best_ask(), 101); // book unchanged
 }
 
-// ---- FOK ---------------------------------------------------------------------
 TYPED_TEST(MatchingTest, FokFullyFillable) {
   this->engine_.submit(limit(1, Side::Sell, 100, 5));
   this->sink_.clear();
@@ -200,10 +193,9 @@ TYPED_TEST(MatchingTest, FokUnsatisfiableRejectedLeavesBookUntouched) {
   ASSERT_EQ(this->sink_.events.size(), 1u);
   EXPECT_EQ(this->sink_.last().type, EventType::Rejected);
   EXPECT_EQ(this->sink_.last().reason, Reason::FokUnsatisfiable);
-  EXPECT_EQ(*this->engine_.best_ask(), 100); // untouched
+  EXPECT_EQ(*this->engine_.best_ask(), 100);
 }
 
-// ---- Cancel ------------------------------------------------------------------
 TYPED_TEST(MatchingTest, CancelExistingOrder) {
   this->engine_.submit(limit(1, Side::Buy, 100, 5));
   this->sink_.clear();
@@ -223,7 +215,6 @@ TYPED_TEST(MatchingTest, CancelNonExistentRejected) {
   EXPECT_EQ(this->sink_.last().reason, Reason::UnknownOrder);
 }
 
-// ---- Modify ------------------------------------------------------------------
 TYPED_TEST(MatchingTest, ModifyReduceKeepsTimePriority) {
   this->engine_.submit(limit(1, Side::Buy, 100, 10));
   this->engine_.submit(limit(2, Side::Buy, 100, 10)); // behind id 1
@@ -232,7 +223,6 @@ TYPED_TEST(MatchingTest, ModifyReduceKeepsTimePriority) {
 
   this->engine_.submit(limit(3, Side::Sell, 100, 4));
 
-  // id 1 kept its front position despite the modify.
   ASSERT_GE(this->sink_.events.size(), 1u);
   EXPECT_EQ(this->sink_.events[0].order_id, 1u);
   EXPECT_EQ(this->sink_.events[0].type, EventType::Filled);
@@ -245,7 +235,6 @@ TYPED_TEST(MatchingTest, ModifyPriceChangeLosesPriority) {
 
   this->engine_.modify(1, 99, 10); // reprice down -> cancel + repost
 
-  // Cancelled then Accepted at the new price.
   EXPECT_EQ(this->sink_.count(EventType::Cancelled), 1u);
   EXPECT_EQ(this->sink_.count(EventType::Accepted), 1u);
 
@@ -263,7 +252,6 @@ TYPED_TEST(MatchingTest, ModifyUnknownRejected) {
   EXPECT_EQ(this->sink_.last().reason, Reason::UnknownOrder);
 }
 
-// ---- Validation --------------------------------------------------------------
 TYPED_TEST(MatchingTest, ZeroQuantityRejected) {
   this->engine_.submit(limit(1, Side::Buy, 100, 0));
   ASSERT_EQ(this->sink_.events.size(), 1u);
@@ -284,7 +272,6 @@ TYPED_TEST(MatchingTest, DuplicateOrderIdRejected) {
   EXPECT_EQ(this->sink_.last().reason, Reason::DuplicateOrderId);
 }
 
-// ---- Crossed-book / self-cross ----------------------------------------------
 TYPED_TEST(MatchingTest, AggressiveLimitNeverLeavesCrossedBook) {
   this->engine_.submit(limit(1, Side::Sell, 100, 5));
   this->sink_.clear();

@@ -8,13 +8,13 @@
 
 #include "lob/itch_writer.hpp"
 
-// Generate a spec-faithful synthetic NASDAQ ITCH 5.0 stream.
+// Generate a synthetic NASDAQ ITCH 5.0 stream.
 //
 //   itch_gen [out_path] [num_messages]
 //
-// Defaults: data/synthetic.itch, 5,000,000 messages. Produces a realistic mix
-// of add / execute / cancel / delete / replace messages with valid order refs
-// and bounded prices, so a downstream replayer reconstructs a non-trivial book.
+// Message refs and prices are tracked as they are emitted so that executes,
+// cancels, deletes and replaces always name a live order: a stream of random
+// bytes would parse but would reconstruct nothing.
 int main(int argc, char** argv) {
   const char* out_path = argc > 1 ? argv[1] : "data/synthetic.itch";
   const std::size_t target = argc > 2 ? std::strtoull(argv[2], nullptr, 10)
@@ -25,17 +25,20 @@ int main(int argc, char** argv) {
   std::uniform_int_distribution<int> action(0, 99);
   std::uniform_int_distribution<int> side(0, 1);
   std::uniform_int_distribution<std::uint32_t> shares(1, 1000);
-  // Tick range 1..100,000 cents ($0.01..$1000) -> ITCH price = tick * 100.
+  // Ticks are cents, 1..100,000 ($0.01..$1000); ITCH prices are tick * 100
+  // because the wire format carries 4 implied decimals.
   std::uniform_int_distribution<std::uint32_t> tick(1, 100'000);
 
   std::unordered_map<std::uint64_t, std::uint32_t> live; // ref -> shares
   std::vector<std::uint64_t> refs;
   std::uint64_t next_ref = 1;
-  constexpr std::size_t kMaxLive = 300'000; // bound peak resting orders
+  constexpr std::size_t kMaxLive = 300'000; // caps peak resting orders
 
   w.system_event('O'); // start of messages
   std::size_t produced = 1;
 
+  // Swap with the back: refs is only ever sampled at random, so its order is
+  // free to change.
   const auto remove_ref = [&](std::uint64_t ref, std::size_t vec_idx) {
     live.erase(ref);
     refs[vec_idx] = refs.back();

@@ -7,7 +7,6 @@
 
 namespace lob::test {
 
-// Event sink that records every emitted event for inspection in tests.
 struct CollectingSink {
   std::vector<Event> events;
 
@@ -32,7 +31,6 @@ struct CollectingSink {
   [[nodiscard]] const Event& last() const { return events.back(); }
 };
 
-// Convenience builders.
 inline OrderRequest limit(OrderId id, Side side, Price price, Quantity qty) {
   return OrderRequest{id, side, OrderType::Limit, price, qty};
 }

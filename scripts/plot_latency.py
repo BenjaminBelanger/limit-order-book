@@ -5,7 +5,7 @@ Run the benchmark first (it writes bench/results/hdr_*.csv), then:
 
     python scripts/plot_latency.py
 
-Produces bench/results/latency.png -- a classic HdrHistogram "latency by
+Produces bench/results/latency.png, a classic HdrHistogram "latency by
 percentile" chart with a logarithmic percentile axis so the tail is visible.
 """
 import csv
@@ -43,7 +43,8 @@ def main():
         except FileNotFoundError:
             continue
         found = True
-        # x = 1/(1-p): standard HDR percentile axis (90% -> 10, 99% -> 100, ...)
+        # 1/(1-p) is the standard HDR axis: 90% -> 10, 99% -> 100, and so on,
+        # which gives each additional nine the same width.
         x = [1.0 / (1.0 - p / 100.0) for p in pcts]
         ax.plot(x, lat, marker="o", markersize=3, label=op)
 

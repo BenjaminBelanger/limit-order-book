@@ -18,13 +18,12 @@ namespace bench {
 
 using Clock = std::chrono::steady_clock;
 
-// Discard-everything event sink: keeps the matching hot path free of any
-// observer cost so the benchmark measures the engine itself.
+// Discards every event, so the benchmark measures the engine and not the cost
+// of observing it.
 struct NullSink {
   void operator()(const lob::Event&) noexcept {}
 };
 
-// Latency distribution computed from raw nanosecond samples.
 struct Stats {
   std::uint64_t count{0};
   double min{0}, p50{0}, p99{0}, p999{0}, max{0}, mean{0};
@@ -51,8 +50,8 @@ inline Stats summarize(std::vector<std::uint64_t>& samples) {
   return s;
 }
 
-// Best-effort estimate of the per-call clock read overhead, subtracted from
-// single-operation latency samples so the reported numbers reflect the engine.
+// Per-call clock read overhead, to subtract from single-operation samples: at
+// these latencies the measurement itself is a meaningful share of the number.
 inline double clock_overhead_ns() {
   constexpr int kIters = 200'000;
   std::uint64_t acc = 0;
@@ -65,7 +64,8 @@ inline double clock_overhead_ns() {
   return static_cast<double>(acc) / kIters;
 }
 
-// Best-effort: pin to one CPU and raise priority to reduce scheduling jitter.
+// Best effort only: pinning and priority reduce scheduling jitter but cannot
+// remove it, since there is no real-time scheduling here.
 inline void pin_and_boost() {
 #if defined(_WIN32)
   SetThreadAffinityMask(GetCurrentThread(), 1ull);

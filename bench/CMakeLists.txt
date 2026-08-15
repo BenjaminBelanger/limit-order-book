@@ -1,4 +1,3 @@
-# Benchmarks build to standalone executables (no test framework dependency).
 find_package(Threads REQUIRED)
 
 add_executable(bench_main bench_main.cpp)

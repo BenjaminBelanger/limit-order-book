@@ -15,19 +15,18 @@ using namespace lob::test;
 
 namespace {
 
-// One generated operation in a random scenario.
 struct Op {
   enum class Kind { Submit, Cancel, Modify } kind;
-  OrderRequest req;       // for Submit
-  OrderId target{0};      // for Cancel / Modify
-  Price new_price{0};     // for Modify
-  Quantity new_qty{0};    // for Modify
+  OrderRequest req;    // Submit
+  OrderId target{0};   // Cancel, Modify
+  Price new_price{0};  // Modify
+  Quantity new_qty{0}; // Modify
 };
 
 constexpr Price kMinPrice = 1;
 constexpr Price kMaxPrice = 200;
 
-// Deterministically generate a mixed sequence of operations for a given seed.
+// Seeded and deterministic, so a divergence found here can be replayed.
 std::vector<Op> generate(std::uint32_t seed, std::size_t count) {
   std::mt19937 rng(seed);
   std::uniform_int_distribution<int> op_pick(0, 9);
@@ -79,8 +78,8 @@ bool same_event(const Event& a, const Event& b) {
          a.remaining == b.remaining && a.reason == b.reason;
 }
 
-// Run a scenario through `Book`, checking the no-crossed-book invariant after
-// every operation. Returns the full event stream.
+// Checks the no-crossed-book invariant after every operation and returns the
+// full event stream for comparison.
 template <class Book>
 std::vector<Event> run(const std::vector<Op>& ops, Book& book) {
   CollectingSink sink;
@@ -103,11 +102,11 @@ std::vector<Event> run(const std::vector<Op>& ops, Book& book) {
   return sink.events;
 }
 
-// Reconstruct resting state purely from the event stream and verify it matches
-// the book's own accounting (conservation of quantity).
+// Rebuilds the resting state from the event stream alone and compares it with
+// the book's own accounting: quantity may move but must never appear or vanish.
 template <class Book>
 void check_conservation(const std::vector<Event>& events, const Book& book) {
-  std::unordered_map<OrderId, Quantity> resting; // id -> resting qty
+  std::unordered_map<OrderId, Quantity> resting;
   for (const Event& e : events) {
     switch (e.type) {
       case EventType::Accepted:
@@ -136,8 +135,8 @@ void check_conservation(const std::vector<Event>& events, const Book& book) {
 
 } // namespace
 
-// Headline property: two completely different book implementations must produce
-// byte-for-byte identical event streams on the same random scenario.
+// The headline property: two unrelated implementations must produce identical
+// event streams for the same scenario.
 TEST(Property, DifferentialNaiveVsFlatEventStreams) {
   for (std::uint32_t seed = 1; seed <= 25; ++seed) {
     const auto ops = generate(seed, 4000);
@@ -160,7 +159,8 @@ TEST(Property, DifferentialNaiveVsFlatEventStreams) {
   }
 }
 
-// Invariants: no crossed book (checked inside run) + quantity conservation.
+// The crossed-book invariant is checked inside run(); conservation is checked
+// here, once the whole scenario has played out.
 TEST(Property, InvariantsHoldOnRandomScenarios) {
   for (std::uint32_t seed = 100; seed <= 130; ++seed) {
     const auto ops = generate(seed, 4000);

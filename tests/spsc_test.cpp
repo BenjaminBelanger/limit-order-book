@@ -15,7 +15,7 @@ TEST(SpscRing, CapacityRoundedToPowerOfTwo) {
 }
 
 TEST(SpscRing, PushPopSingleThread) {
-  SpscRing<int> ring(4); // capacity 4
+  SpscRing<int> ring(4);
   EXPECT_TRUE(ring.empty());
   EXPECT_TRUE(ring.try_push(1));
   EXPECT_TRUE(ring.try_push(2));
@@ -37,14 +37,17 @@ TEST(SpscRing, PopEmptyReturnsFalse) {
   EXPECT_FALSE(ring.try_pop(v));
 }
 
-// Concurrent producer/consumer: every value is delivered exactly once, in order.
+// The single-threaded cases cannot catch a missing acquire/release pairing, so
+// this one runs the two roles on real threads and checks nothing is dropped,
+// duplicated, or reordered.
 TEST(SpscRing, ConcurrentProducerConsumer) {
   constexpr std::uint64_t kN = 1'000'000;
   SpscRing<std::uint64_t> ring(1024);
 
   std::thread producer([&] {
     for (std::uint64_t i = 0; i < kN; ++i) {
-      while (!ring.try_push(i)) { /* spin until space */ }
+      while (!ring.try_push(i)) { // spin until the consumer frees a slot
+      }
     }
   });
 

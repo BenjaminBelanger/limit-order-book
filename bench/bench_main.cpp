@@ -36,16 +36,20 @@ constexpr std::size_t kPriceSpan = 1u << 16; // distinct prices touched
 double g_overhead = 0.0; // rdtsc read overhead, in nanoseconds
 bench::TscClock g_tsc;
 
+// Each operation is measured twice: once in a tight loop for throughput, and
+// once with a per-operation clock read for the latency distribution. Timing
+// every operation would itself distort the throughput number.
+
 std::uint64_t sample_ns(std::uint64_t c0, std::uint64_t c1) {
   const double ns = g_tsc.to_ns(c1 - c0) - g_overhead;
   return ns > 0 ? static_cast<std::uint64_t>(ns) : 0;
 }
 
-// ---- add: insert resting orders, no matching ---------------------------------
+// Non-crossing limit orders: pure insertion, no matching.
 template <class Book, class Factory>
 void bench_add(Factory make, std::size_t n, Stats& lat, double& tput,
                HdrHistogram* hist = nullptr) {
-  { // throughput pass (no per-op clock)
+  { // throughput
     Book book = make();
     NullSink sink;
     MatchingEngine<Book, NullSink> eng(book, sink);
@@ -56,7 +60,7 @@ void bench_add(Factory make, std::size_t n, Stats& lat, double& tput,
     }
     tput = static_cast<double>(n) / seconds(Clock::now() - t0);
   }
-  { // latency pass (per-op clock)
+  { // latency
     Book book = make();
     NullSink sink;
     MatchingEngine<Book, NullSink> eng(book, sink);
@@ -74,7 +78,8 @@ void bench_add(Factory make, std::size_t n, Stats& lat, double& tput,
   }
 }
 
-// ---- cancel: remove resting orders in randomized order -----------------------
+// Cancels run in shuffled order so the index lookup cannot ride insertion
+// locality.
 template <class Book, class Factory>
 void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput,
                   HdrHistogram* hist = nullptr) {
@@ -115,7 +120,7 @@ void bench_cancel(Factory make, std::size_t n, Stats& lat, double& tput,
   }
 }
 
-// ---- match: aggressive orders each consume one resting order -----------------
+// Each aggressive IOC order consumes exactly one resting order.
 template <class Book, class Factory>
 void bench_match(Factory make, std::size_t n, Stats& lat, double& tput,
                  HdrHistogram* hist = nullptr) {
@@ -161,7 +166,7 @@ struct SuiteResult {
 
 template <class Book, class Factory>
 SuiteResult run_suite(const char* label, Factory make, std::size_t n) {
-  // Warm up caches / branch predictors before measuring.
+  // Warm the caches and branch predictors before anything is recorded.
   Stats warm_l;
   double warm_t = 0;
   bench_add<Book>(make, n / 10, warm_l, warm_t);
@@ -178,9 +183,8 @@ SuiteResult run_suite(const char* label, Factory make, std::size_t n) {
   return r;
 }
 
-// Export a histogram as a latency-by-percentile spectrum CSV (HdrHistogram
-// style): each row is a percentile and the latency at or below which that
-// fraction of operations completed. A plotting script turns these into a chart.
+// One row per percentile, holding the latency at or below which that fraction
+// of operations completed; scripts/plot_latency.py renders the result.
 void export_hdr(const std::string& op, const HdrHistogram& h) {
   namespace fs = std::filesystem;
   fs::create_directories("bench/results");
@@ -194,10 +198,10 @@ void export_hdr(const std::string& op, const HdrHistogram& h) {
   }
 }
 
-// ---- SPSC ingestion pipeline -------------------------------------------------
-// Producer thread enqueues orders; consumer thread pops and feeds the engine.
-// Orders alternate buy/sell at one price so they match immediately and the book
-// stays tiny -- this measures the end-to-end ingestion + match pipeline rate.
+// A producer thread enqueues orders while the consumer pops and feeds the
+// engine. Orders alternate buy and sell at one price so they match immediately
+// and the book stays tiny, leaving the ingestion pipeline as the thing measured
+// rather than the book.
 double bench_spsc(std::size_t n) {
   SpscRing<OrderRequest> ring(1u << 16);
   BookConfig cfg{90, 110, 1024};
@@ -236,7 +240,7 @@ int main() {
   bench::pin_and_boost();
   g_tsc.calibrate();
 
-  // Measure rdtsc read overhead (subtracted from latency samples).
+  // rdtsc read overhead, subtracted from every latency sample below.
   {
     constexpr int kIters = 200'000;
     std::uint64_t acc = 0;
@@ -271,7 +275,6 @@ int main() {
   std::printf("%-14s %12.2f %12.2f %9.2fx\n", "match", flat.match_t / 1e6,
               naive.match_t / 1e6, flat.match_t / naive.match_t);
 
-  // ---- HDR latency capture + CSV export (for plotting) -----------------------
   {
     HdrHistogram h_add, h_cancel, h_match;
     Stats tmp;

@@ -9,18 +9,10 @@
 
 #include "lob/types.hpp"
 
-// Reference order book backed by std::map + std::list.
-//
-// This implementation is intentionally simple and "obviously correct": it is
-// the baseline that the optimized flat-array book is differentially tested
-// against, and the slow-but-clear comparison target for benchmarks. It is NOT
-// optimized - it uses node-based containers and pointer chasing on the hot path.
-//
-//   * bids: std::map keyed by price, highest first (std::greater).
-//   * asks: std::map keyed by price, lowest first  (std::less).
-//   * each price level is a std::list<RestingOrder> giving FIFO time priority.
-//   * an order index maps OrderId -> {side, price, list iterator} for O(1)-ish
-//     cancel/modify (subject to hash + node lookup costs).
+// Reference order book. Deliberately unoptimized: node-based containers and
+// pointer chasing on the hot path are the point, since this is both the
+// obviously-correct baseline the flat book is differentially tested against and
+// the comparison target the benchmark measures against.
 namespace lob {
 
 class NaiveBook {
@@ -97,18 +89,18 @@ public:
     return index_.find(id) != index_.end();
   }
 
-  // The naive book has no price band, so every price is acceptable.
+  // No price band here, unlike FlatBook, so nothing is ever out of range.
   [[nodiscard]] static constexpr bool accepts(Price) noexcept { return true; }
 
   [[nodiscard]] Quantity available_against(Side aggressor,
                                            std::optional<Price> limit) const {
     Quantity total = 0;
-    if (aggressor == Side::Buy) { // match against asks (ascending)
+    if (aggressor == Side::Buy) { // asks, cheapest first
       for (const auto& [price, level] : asks_) {
         if (limit && price > *limit) break;
         total += level_qty(level);
       }
-    } else { // match against bids (descending)
+    } else { // bids, richest first
       for (const auto& [price, level] : bids_) {
         if (limit && price < *limit) break;
         total += level_qty(level);
@@ -119,7 +111,7 @@ public:
 
   [[nodiscard]] std::size_t size() const { return index_.size(); }
 
-  // Sum of all resting quantity (test/debug helper for conservation checks).
+  // Walks every level, so this is for tests and debugging, not the hot path.
   [[nodiscard]] Quantity total_quantity() const {
     Quantity t = 0;
     for (const auto& [price, level] : bids_) t += level_qty(level);
@@ -169,6 +161,7 @@ private:
     if (level.empty()) book.erase(level_it);
   }
 
+  // Comparators put the best price of each side at begin().
   std::map<Price, Level, std::greater<Price>> bids_;
   std::map<Price, Level, std::less<Price>> asks_;
   std::unordered_map<OrderId, Locator> index_;

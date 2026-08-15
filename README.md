@@ -33,31 +33,44 @@ fuzz test prove they behave identically, and lets the benchmark quantify the spe
 ## Architecture
 
 ```
-                         +----------------------------------------------+
-   OrderRequest          |                MatchingEngine                |
-  (id, side, type,       |  validate -> match (price-time) -> rest/cxl  |
-   price, qty)           |     emits Accepted/Filled/Cancelled/...      |
-        |                +----------------------+-----------------------+
-        |                                       | generic over Book backend
-        v                                       v
-  +-----------+   pop    +----------------------------------------------+
-  | SPSC ring | -------> |                 Book backend                 |
-  | (lock-    |          |                                              |
-  |  free)    |          |   FlatBook (optimized)       NaiveBook (ref) |
-  +-----------+          |   +-------------------+      +-------------+  |
-        ^                |   | levels[]  (flat)  |      | std::map    |  |
-   producer thread       |   |  idx = price-min  |      |  price->list|  |
-   (feed/client)         |   +---------+---------+      +-------------+  |
-                         |   best_bid/best_ask = cached level indices    |
-                         |   +---------v---------+   +------------------+ |
-                         |   | intrusive FIFO    |   | FlatHashIndex    | |
-                         |   | list per level    |   | OrderId -> slot  | |
-                         |   | ObjectPool<Order> |   | (open addressing)| |
-                         |   +-------------------+   +------------------+ |
-                         +----------------------------------------------+
-        |
-        v
-   Event stream  ->  EventHandler sink (callback; NullSink on the bench hot path)
+OrderRequest (id, side, type, price, quantity)
+  |
+  |  producer thread: feed or client
+  v
++--------------------------+
+|  SPSC ring (lock-free)   |
++--------------------------+
+  |
+  |  pop (consumer thread)
+  v
++----------------------------------------------------------+
+|                      MatchingEngine                      |
+|  validate -> match on price-time priority -> rest        |
+|  emits Accepted / Rejected / PartiallyFilled /           |
+|         Filled / Cancelled                               |
++----------------------------------------------------------+
+  |
+  |  templated on the Book backend
+  v
++----------------------------------------------------------+
+|                       Book backend                       |
+|                                                          |
+|  FlatBook (optimized)         NaiveBook (reference)      |
+|  +-------------------------+  +-----------------------+  |
+|  | levels[] flat array     |  | std::map per side     |  |
+|  |   idx = price - min     |  |   price -> std::list  |  |
+|  | best_bid / best_ask     |  | best = map.begin()    |  |
+|  |   cached as indices     |  |   O(log n) per access |  |
+|  | intrusive FIFO list     |  | std::list per level   |  |
+|  | ObjectPool<Order>       |  | unordered_map index   |  |
+|  | FlatHashIndex           |  |   id -> list node     |  |
+|  |   id -> pool slot       |  | unbounded price range |  |
+|  +-------------------------+  +-----------------------+  |
++----------------------------------------------------------+
+  |
+  v
+Event stream -> EventHandler sink
+                (NullSink on the benchmark hot path)
 ```
 
 ### Components

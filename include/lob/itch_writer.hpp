@@ -5,9 +5,9 @@
 
 #include "lob/itch.hpp"
 
-// Encoder for NASDAQ ITCH 5.0 messages into the length-prefixed BinaryFILE
-// framing. Used to generate spec-faithful synthetic streams for tests and the
-// demo generator (the real NASDAQ sample feeds are multi-gigabyte).
+// Encodes ITCH 5.0 messages into the length-prefixed BinaryFILE framing, which
+// is how the tests and the demo generator get a spec-faithful stream without
+// downloading a multi-gigabyte NASDAQ sample feed.
 namespace lob::itch {
 
 class ItchWriter {
@@ -16,7 +16,7 @@ public:
 
   void system_event(char code) {
     begin('S');
-    put48(0); // timestamp
+    put48(0);
     msg_.push_back(static_cast<std::uint8_t>(code));
     end();
   }
@@ -28,7 +28,7 @@ public:
     put64(ref);
     msg_.push_back(is_buy ? 'B' : 'S');
     put32(shares);
-    for (int i = 0; i < 8; ++i) msg_.push_back(' '); // stock symbol (padded)
+    for (int i = 0; i < 8; ++i) msg_.push_back(' '); // stock symbol, space padded
     put32(price);
     end();
   }
@@ -70,15 +70,16 @@ public:
   }
 
 private:
-  // Start a message: type + stock_locate(2) + tracking(2). The caller then
-  // appends timestamp(6) and the type-specific payload before calling end().
+  // Writes the header shared by every message: type, then a zeroed stock_locate
+  // and tracking number. Callers follow it with a 6-byte timestamp (put48) and
+  // the type-specific payload, then call end() to emit the length prefix.
   void begin(char type) {
     msg_.clear();
     msg_.push_back(static_cast<std::uint8_t>(type));
     msg_.push_back(0);
-    msg_.push_back(0); // stock_locate
     msg_.push_back(0);
-    msg_.push_back(0); // tracking_number
+    msg_.push_back(0);
+    msg_.push_back(0);
   }
   void end() {
     const std::uint16_t len = static_cast<std::uint16_t>(msg_.size());

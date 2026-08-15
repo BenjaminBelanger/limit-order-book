@@ -13,7 +13,7 @@
 //   itch_replay [in_path]
 //
 // Works on the synthetic feed from itch_gen and on a real NASDAQ ITCH 5.0
-// sample (decompress the .gz first). Default path: data/synthetic.itch.
+// sample once the .gz is decompressed.
 int main(int argc, char** argv) {
   const char* in_path = argc > 1 ? argv[1] : "data/synthetic.itch";
 
@@ -30,7 +30,8 @@ int main(int argc, char** argv) {
   std::vector<std::uint8_t> data(static_cast<std::size_t>(size));
   in.read(reinterpret_cast<char*>(data.data()), size);
 
-  // Band covers $0.01..$1000 in cents; capacity sized for the synthetic peak.
+  // Band covers $0.01..$1000 in cents; capacity is sized for the synthetic
+  // feed's peak resting-order count.
   lob::BookConfig cfg{1, 100'000, 1u << 21};
   lob::FlatBook book(cfg);
   lob::itch::ItchReplayer replayer(book);

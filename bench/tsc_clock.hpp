@@ -3,12 +3,10 @@
 #include <chrono>
 #include <cstdint>
 
-// High-resolution cycle timer based on the x86 time-stamp counter. steady_clock
-// on this platform has ~100 ns granularity, which is far too coarse to resolve
-// per-operation latencies in the tens of nanoseconds. rdtsc gives single-cycle
-// resolution; we calibrate cycles->ns against steady_clock once at startup.
-//
-// Falls back to steady_clock on non-x86 targets.
+// Cycle timer built on the x86 time-stamp counter. steady_clock here has
+// ~100 ns granularity, which quantizes away per-operation latencies measured in
+// tens of nanoseconds; rdtsc resolves single cycles, calibrated to nanoseconds
+// against steady_clock once at startup. Falls back to steady_clock off x86.
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #define LOB_HAVE_TSC 1
@@ -21,7 +19,7 @@ namespace bench {
 
 [[nodiscard]] inline std::uint64_t rdtsc_now() {
 #if LOB_HAVE_TSC
-  _mm_lfence(); // serialize: keep the timed region from leaking across the read
+  _mm_lfence(); // serialize, so the timed region cannot drift across the read
   const std::uint64_t t = __rdtsc();
   _mm_lfence();
   return t;

@@ -26,7 +26,7 @@ TEST(HdrHistogram, BasicCounts) {
   EXPECT_EQ(h.min(), 50);
   EXPECT_EQ(h.max(), 50);
   EXPECT_NEAR(h.mean(), 50.0, 1e-9);
-  // Single value: every percentile resolves to ~50 (within HDR resolution).
+  // With one distinct value, every percentile lands on it, up to bucket width.
   EXPECT_NEAR(static_cast<double>(h.value_at_percentile(50)), 50.0, 1.0);
   EXPECT_NEAR(static_cast<double>(h.value_at_percentile(99.9)), 50.0, 1.0);
 }
@@ -34,7 +34,8 @@ TEST(HdrHistogram, BasicCounts) {
 TEST(HdrHistogram, PercentilesMatchReferenceWithinPrecision) {
   HdrHistogram h(100'000'000, 3); // 3 significant figures
   std::mt19937 rng(7);
-  // Mixed distribution: a bulk near 100ns plus heavy-tailed outliers.
+  // A bulk near 100 ns plus heavy-tailed outliers, which is the shape real
+  // latency has and the shape that breaks naive bucketing.
   std::vector<std::int64_t> samples;
   std::normal_distribution<double> bulk(120.0, 25.0);
   std::lognormal_distribution<double> tail(6.0, 1.0);
@@ -49,7 +50,8 @@ TEST(HdrHistogram, PercentilesMatchReferenceWithinPrecision) {
   for (double p : {50.0, 90.0, 99.0, 99.9}) {
     const double got = static_cast<double>(h.value_at_percentile(p));
     const double ref = static_cast<double>(ref_percentile(samples, p));
-    // HDR guarantees the reported value is within 0.1% of the true value.
+    // The tolerance is looser than HDR's own guarantee to absorb the reference
+    // percentile's off-by-one rounding on small counts.
     EXPECT_LE(std::abs(got - ref), 0.01 * ref + 2.0)
         << "p=" << p << " got=" << got << " ref=" << ref;
   }

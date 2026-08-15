@@ -8,11 +8,9 @@
 
 namespace lob {
 
-// Open-addressing hash map specialised for OrderId -> 32-bit value (typically a
-// pool slot index). Linear probing with backward-shift deletion means there are
-// no tombstones and no per-element node allocation. The table is sized once to
-// keep the load factor below ~0.5, so lookups stay close to O(1) and the hot
-// path never rehashes or allocates.
+// Open-addressing map from OrderId to a 32-bit value (a pool slot). Linear
+// probing with backward-shift deletion leaves no tombstones, and the table is
+// sized once at construction, so the hot path never rehashes or allocates.
 //
 // OrderId 0 (kInvalidOrderId) is reserved as the empty-slot marker.
 class FlatHashIndex {
@@ -27,7 +25,7 @@ public:
   void insert(OrderId key, std::uint32_t value) {
     std::size_t i = hash(key) & mask_;
     while (slots_[i].key != kInvalidOrderId) {
-      if (slots_[i].key == key) { // overwrite existing
+      if (slots_[i].key == key) {
         slots_[i].value = value;
         return;
       }
@@ -80,7 +78,7 @@ private:
     std::uint32_t value{0};
   };
 
-  // Fibonacci hashing: cheap, good avalanche for sequential ids.
+  // Fibonacci hashing: one multiply, and it spreads sequential ids well.
   static std::size_t hash(OrderId key) noexcept {
     return static_cast<std::size_t>(key * 0x9E3779B97F4A7C15ull);
   }

@@ -13,28 +13,19 @@
 namespace lob {
 
 struct BookConfig {
-  Price min_price{1};            // inclusive lower tick bound
-  Price max_price{100'000};      // inclusive upper tick bound
-  std::size_t capacity{1u << 16};// max simultaneously resting orders
+  Price min_price{1};             // inclusive lower tick bound
+  Price max_price{100'000};       // inclusive upper tick bound
+  std::size_t capacity{1u << 16}; // max simultaneously resting orders
 };
 
-// Cache-friendly limit order book.
+// Cache-friendly limit order book; see the README for the full rationale.
 //
-// Design (see README for the rationale and tradeoffs):
-//   * Price levels live in a single flat std::vector indexed by (price-min). No
-//     std::map, no node-based tree -> contiguous memory, no pointer chasing to
-//     reach a level.
-//   * Resting orders use an intrusive doubly-linked list per level backed by a
-//     pre-allocated ObjectPool<Order> -> O(1) add/cancel, zero allocation on the
-//     hot path.
-//   * Best-bid / best-ask are cached as level indices, giving O(1) BBO. When the
-//     best level empties we scan toward the next occupied level; in practice
-//     prices cluster, so this is O(1) amortised.
-//   * An open-addressing FlatHashIndex maps OrderId -> pool slot for O(1) cancel
-//     and modify.
+// Levels are a flat array indexed by (price - min_price), so the price band is
+// bounded and memory is proportional to its width. Prices outside the band are
+// rejected rather than grown into.
 //
-// The book is never left crossed (the engine matches before resting), so bid and
-// ask occupied prices are disjoint and can share one level array safely.
+// Bids and asks share that one array: the engine matches before resting, so the
+// book is never left crossed and the occupied bid and ask prices stay disjoint.
 class FlatBook {
 public:
   FlatBook() : FlatBook(BookConfig{}) {}
@@ -150,12 +141,12 @@ public:
   [[nodiscard]] Quantity available_against(Side aggressor,
                                            std::optional<Price> limit) const {
     Quantity total = 0;
-    if (aggressor == Side::Buy) { // sweep asks upward
+    if (aggressor == Side::Buy) { // asks, cheapest first
       if (best_ask_ < 0) return 0;
       const std::int64_t hi = limit ? to_index_clamped_high(*limit)
                                     : static_cast<std::int64_t>(levels_.size()) - 1;
       for (std::int64_t i = best_ask_; i <= hi; ++i) total += levels_[static_cast<std::size_t>(i)].total_qty;
-    } else { // sweep bids downward
+    } else { // bids, richest first
       if (best_bid_ < 0) return 0;
       const std::int64_t lo = limit ? to_index_clamped_low(*limit) : 0;
       for (std::int64_t i = best_bid_; i >= lo; --i) total += levels_[static_cast<std::size_t>(i)].total_qty;
@@ -165,7 +156,7 @@ public:
 
   [[nodiscard]] std::size_t size() const noexcept { return index_.size(); }
 
-  // Sum of all resting quantity (test/debug helper for conservation checks).
+  // Walks every level, so this is for tests and debugging, not the hot path.
   [[nodiscard]] Quantity total_quantity() const {
     Quantity t = 0;
     for (const auto& level : levels_) t += level.total_qty;
@@ -179,7 +170,7 @@ private:
   [[nodiscard]] std::int64_t to_index(Price p) const noexcept {
     return static_cast<std::int64_t>(p - min_price_);
   }
-  // Clamp a limit price to the valid index range for sweep bounds.
+  // A limit price may sit outside the band, so clamp before using it as a bound.
   [[nodiscard]] std::int64_t to_index_clamped_high(Price p) const noexcept {
     const std::int64_t hi = static_cast<std::int64_t>(levels_.size()) - 1;
     const std::int64_t i = to_index(p);
@@ -190,7 +181,9 @@ private:
     return i < 0 ? 0 : i;
   }
 
-  // Find the next occupied level after the current best emptied.
+  // Linear scan for the next occupied level once the best one empties. Real flow
+  // clusters at the touch, so this is O(1) amortised; a lone order far from the
+  // rest is the worst case the flat layout pays for.
   void advance_best(Side s, std::int64_t from) {
     if (s == Side::Buy) {
       for (std::int64_t i = from - 1; i >= 0; --i) {

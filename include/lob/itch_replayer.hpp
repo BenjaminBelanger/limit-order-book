@@ -8,15 +8,14 @@
 
 namespace lob::itch {
 
-// Reconstructs the displayable order book from an ITCH 5.0 stream by applying
-// add/execute/cancel/delete/replace messages directly to a FlatBook. (ITCH is
-// post-match exchange output, so executions are *applied*, not re-matched.)
+// Reconstructs the displayable book from an ITCH 5.0 stream. ITCH is post-match
+// exchange output, so executions are *applied* to the book rather than re-run
+// through the matching engine.
 //
-// ITCH prices have 4 implied decimals (value/10000 USD). The flat book indexes a
-// bounded tick band, so prices are scaled to cents (value/100) which covers
-// equities up to ~$10,000 with a 1,000,000-entry level array. This mirrors the
-// flat-array tradeoff discussed in the README; orders outside the band are
-// skipped and counted.
+// ITCH prices carry 4 implied decimals (value/10000 USD) but the flat book
+// indexes a bounded tick band, so prices are scaled down to cents: a
+// 1,000,000-entry level array then covers equities up to ~$10,000. Orders
+// outside the band are skipped and counted.
 class ItchReplayer {
 public:
   explicit ItchReplayer(FlatBook& book, std::uint32_t price_divisor = 100)

@@ -6,14 +6,12 @@
 
 namespace lob {
 
-// High Dynamic Range histogram.
-//
-// A from-scratch implementation of the HdrHistogram algorithm (Gil Tene): values
-// are bucketed by their power-of-two magnitude, with a fixed number of linear
-// sub-buckets inside each magnitude. This records any value in O(1) with bounded
-// relative error (set by significant figures) across a huge dynamic range, which
-// is exactly what latency measurement needs - microsecond outliers must not lose
-// nanosecond resolution near the median.
+// From-scratch implementation of the HdrHistogram algorithm (Gil Tene). Values
+// are bucketed by power-of-two magnitude with a fixed number of linear
+// sub-buckets inside each magnitude, which records any value in O(1) at bounded
+// relative error across a huge dynamic range. That range is the point for
+// latency work: microsecond outliers must not cost nanosecond resolution near
+// the median.
 class HdrHistogram {
 public:
   explicit HdrHistogram(std::int64_t highest_trackable = 100'000'000,
@@ -71,7 +69,7 @@ public:
     return total_ ? static_cast<double>(sum_) / static_cast<double>(total_) : 0.0;
   }
 
-  // Invoke f(value_ns, count) for every non-empty histogram entry, in order.
+  // Calls f(value, count) for every non-empty entry, in ascending value order.
   template <class F>
   void for_each(F&& f) const {
     for (std::int32_t i = 0; i < counts_len_; ++i) {

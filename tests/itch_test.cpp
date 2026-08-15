@@ -8,8 +8,8 @@
 using namespace lob;
 using namespace lob::itch;
 
-// Encode a deterministic ITCH 5.0 stream, parse + replay it, and verify the
-// reconstructed book exactly matches the expected state.
+// Encoder and parser are exercised against each other, so a wire-layout mistake
+// in one has to be mirrored exactly in the other to escape this test.
 TEST(Itch, RoundTripReconstruction) {
   ItchWriter w;
   w.system_event('O');
@@ -23,7 +23,7 @@ TEST(Itch, RoundTripReconstruction) {
 
   BookConfig cfg{1, 100'000, 1024};
   FlatBook book(cfg);
-  ItchReplayer replayer(book); // divisor 100 -> ticks are cents
+  ItchReplayer replayer(book); // default divisor of 100 makes ticks cents
 
   const std::size_t msgs =
       parse_stream(w.bytes().data(), w.bytes().size(), replayer);
@@ -48,8 +48,8 @@ TEST(Itch, RoundTripReconstruction) {
 
 TEST(Itch, OutOfBandOrdersSkipped) {
   ItchWriter w;
-  w.add_order(1, true, 100, 100'000'000); // $10,000 -> tick 1,000,000 > band
-  w.add_order(2, true, 100, 1'000'000);   // $100 -> tick 10,000 ok
+  w.add_order(1, true, 100, 100'000'000); // $10,000 -> tick 1,000,000, past the band
+  w.add_order(2, true, 100, 1'000'000);   // $100 -> tick 10,000, inside it
 
   BookConfig cfg{1, 100'000, 64};
   FlatBook book(cfg);

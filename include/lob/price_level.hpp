@@ -7,23 +7,21 @@
 
 namespace lob {
 
-// A resting order stored in the pool. `id` and `qty` come first so the matching
-// engine can read them generically (the same way it reads RestingOrder from the
-// naive book). `prev`/`next` are intrusive list links expressed as pool indices.
+// Mirrors RestingOrder's `id` and `qty` names so the engine can read the front
+// of a level the same way on either backend. `prev`/`next` are list links held
+// as pool indices rather than pointers.
 struct Order {
   OrderId id{kInvalidOrderId};
   Quantity qty{0};
-  Price price{0}; // tick price -> used to find the level on cancel/modify
+  Price price{0}; // kept per order so cancel/modify can find the level
   Side side{Side::Buy};
   std::uint32_t prev{kNil};
   std::uint32_t next{kNil};
 };
 
-// Intrusive FIFO doubly-linked list of orders resting at one price.
-//
-// Time priority is preserved by always appending at the tail and matching from
-// the head. All operations are O(1); `total_qty` is kept current so the book can
-// answer fill-or-kill availability and depth queries without walking the list.
+// Intrusive FIFO list of the orders resting at one price. Appending at the tail
+// and matching from the head is what gives time priority. `total_qty` is kept
+// current so fill-or-kill and depth queries never walk the list.
 struct PriceLevel {
   std::uint32_t head{kNil};
   std::uint32_t tail{kNil};
